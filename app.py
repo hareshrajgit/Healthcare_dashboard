@@ -11,7 +11,7 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("🏥 Healthcare Operations Dashboard")
+st.title("🏥 Development of a Healthcare Operations Intelligence Dashboard with Decision Analytics")
 st.caption("Interactive operational dashboard built with Streamlit + Plotly")
 
 
