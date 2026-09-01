@@ -7,12 +7,12 @@ import plotly.express as px
 # PAGE CONFIG
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="Healthcare Operations Dashboard",
+    page_title="Healthcare Operations Intelligence Dashboard with Decision Analytics",
     page_icon="🏥",
     layout="wide"
 )
 
-st.title("🏥 Healthcare Operations Dashboard")
+st.title("🏥 Healthcare Operations Intelligence Dashboard with Decision Analytics")
 st.caption("Interactive operational dashboard built with Streamlit + Plotly")
 
 # ---------------------------------------------------------
