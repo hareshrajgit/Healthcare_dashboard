@@ -7,12 +7,12 @@ import plotly.express as px
 # PAGE CONFIG
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="Healthcare Operations Intelligence Dashboard with Decision Analytics",
+    page_title="Healthcare Operations Dashboard",
     page_icon="🏥",
     layout="wide"
 )
 
-st.title("🏥 Healthcare Operations Intelligence Dashboard with Decision Analytics")
+st.title("🏥 Healthcare Operations Dashboard")
 st.caption("Interactive operational dashboard built with Streamlit + Plotly")
 
 # ---------------------------------------------------------
@@ -183,7 +183,7 @@ page = st.sidebar.radio(
         "🚪 Discharge & Recovery Analysis",
         "📈 Service Demand Analysis",
         "👨‍⚕️ Workforce & Staff Utilization",
-        "🛏️ Bed Capacity & Utilization",
+        "🛏️ Bed Occupancy Analysis",
         "🏢 Department Workload Analysis",
         "⚠️ Operational Bottlenecks",
         "🎯 Resource Capacity & Efficiency",
@@ -1103,141 +1103,296 @@ elif page == "👨‍⚕️ Workforce & Staff Utilization":
         st.plotly_chart(fig, use_container_width=True)
 
 
-elif page == "🛏️ Bed Capacity & Utilization":
+elif page == "🛏️ Bed Occupancy Analysis":
 
-    st.subheader("🛏️ Bed Capacity, Occupancy & Utilization")
-    st.caption("Analyze total beds, occupied beds, available beds and department/hospital bed utilization.")
+    st.subheader("🛏️ Bed Occupancy Analysis")
+    st.caption(
+        "Track daily occupied and available beds, identify peak occupancy, compare hospitals, "
+        "and examine department-wise occupancy on the peak date."
+    )
 
-    if not beds_col and not occupied_beds_col and not available_beds_col:
+    required = [date_col, patient_col, beds_col]
+    if not all(required):
         st.warning(
-            "No bed-capacity column was detected. Add Total_Beds/Beds/Bed_Capacity, "
-            "and optionally Occupied_Beds or Available_Beds, for direct occupancy analysis."
+            "This analysis requires Admission Date, Patient ID and Total Beds columns. "
+            "The detected dataset does not contain all required fields."
         )
     else:
-        group_col = dept_col if dept_col else hospital_col
-        group_label = "Department" if dept_col else "Hospital"
+        bed_df = filtered.copy()
+        bed_df[date_col] = pd.to_datetime(bed_df[date_col], errors="coerce")
 
-        if group_col:
-            bed = filtered.groupby(group_col).size().reset_index(name="Patients")
+        # Use discharge date when available; otherwise the admission day is treated as the occupancy day.
+        if discharge_col:
+            bed_df[discharge_col] = pd.to_datetime(bed_df[discharge_col], errors="coerce")
 
-            # Capacity: use the first recorded capacity for each group.
-            if beds_col:
-                capacity = filtered.groupby(group_col)[beds_col].first().reset_index(name="Total_Beds")
-                bed = bed.merge(capacity, on=group_col, how="left")
+        bed_df = bed_df.dropna(subset=[date_col, patient_col, beds_col])
+
+        if bed_df.empty:
+            st.warning("No valid records are available for the selected filters.")
+        else:
+            # Hospital bed capacity: one capacity value per hospital.
+            hospital_keys = [hospital_col] if hospital_col else []
+            if not hospital_keys:
+                hospital_keys = ["__Hospital_Group__"]
+                bed_df["__Hospital_Group__"] = "All Hospitals"
+
+            hospital_beds = (
+                bed_df.groupby(hospital_keys)[beds_col]
+                .first()
+                .reset_index(name="Total_Beds")
+            )
+            hospital_beds["Total_Beds"] = pd.to_numeric(
+                hospital_beds["Total_Beds"], errors="coerce"
+            ).fillna(0)
+
+            # Create daily occupancy records from admission/discharge intervals.
+            min_date = bed_df[date_col].min()
+            max_date = (
+                bed_df[discharge_col].max()
+                if discharge_col and bed_df[discharge_col].notna().any()
+                else bed_df[date_col].max()
+            )
+            if pd.isna(max_date) or max_date < min_date:
+                max_date = min_date
+
+            dates = pd.date_range(min_date, max_date, freq="D")
+            results = []
+
+            for current_date in dates:
+                if discharge_col:
+                    occupied = bed_df[
+                        (bed_df[date_col] <= current_date) &
+                        (bed_df[discharge_col].fillna(current_date + pd.Timedelta(days=1)) > current_date)
+                    ]
+                else:
+                    occupied = bed_df[bed_df[date_col] == current_date]
+
+                if hospital_col:
+                    occupied_by_hospital = (
+                        occupied.groupby(hospital_col)[patient_col].nunique()
+                    )
+                    for _, row in hospital_beds.iterrows():
+                        h = row[hospital_col]
+                        total = float(row["Total_Beds"])
+                        occ = int(occupied_by_hospital.get(h, 0))
+                        available = total - occ
+                        results.append({
+                            "Date": current_date,
+                            hospital_col: h,
+                            "Total_Beds": total,
+                            "Occupied_Beds": occ,
+                            "Available_Beds": available,
+                            "Occupancy_Percentage": (occ / total * 100) if total > 0 else np.nan
+                        })
+                else:
+                    total = float(hospital_beds["Total_Beds"].sum())
+                    occ = int(occupied[patient_col].nunique())
+                    results.append({
+                        "Date": current_date,
+                        "Total_Beds": total,
+                        "Occupied_Beds": occ,
+                        "Available_Beds": total - occ,
+                        "Occupancy_Percentage": (occ / total * 100) if total > 0 else np.nan
+                    })
+
+            occupancy_df = pd.DataFrame(results)
+
+            if occupancy_df.empty:
+                st.warning("Unable to calculate daily bed occupancy from the selected data.")
             else:
-                bed["Total_Beds"] = np.nan
-
-            # Prefer explicitly supplied occupied/available beds.
-            if occupied_beds_col:
-                occupied = filtered.groupby(group_col)[occupied_beds_col].max().reset_index(name="Occupied_Beds")
-                bed = bed.merge(occupied, on=group_col, how="left")
-            else:
-                bed["Occupied_Beds"] = np.nan
-
-            if available_beds_col:
-                available = filtered.groupby(group_col)[available_beds_col].max().reset_index(name="Available_Beds")
-                bed = bed.merge(available, on=group_col, how="left")
-            else:
-                bed["Available_Beds"] = np.nan
-
-            # If direct occupancy is unavailable, estimate occupied beds from patient-days.
-            estimated = False
-            if date_col and los_col and beds_col and bed["Occupied_Beds"].isna().all():
-                period_days = max(
-                    (filtered[date_col].max() - filtered[date_col].min()).days + 1, 1
+                # Overall daily occupancy.
+                daily_occupancy = (
+                    occupancy_df.groupby("Date")
+                    .agg(
+                        Total_Beds=("Total_Beds", "sum"),
+                        Occupied_Beds=("Occupied_Beds", "sum")
+                    )
+                    .reset_index()
                 )
-                pdays = filtered.groupby(group_col)[los_col].sum().reset_index(name="Patient_Days")
-                bed = bed.merge(pdays, on=group_col, how="left")
-                bed["Estimated_Occupied_Beds"] = bed["Patient_Days"] / period_days
-                bed["Occupied_Beds"] = bed["Estimated_Occupied_Beds"]
-                estimated = True
-            else:
-                bed["Patient_Days"] = np.nan
+                daily_occupancy["Available_Beds"] = (
+                    daily_occupancy["Total_Beds"] - daily_occupancy["Occupied_Beds"]
+                )
+                daily_occupancy["Occupancy_Percentage"] = np.where(
+                    daily_occupancy["Total_Beds"] > 0,
+                    daily_occupancy["Occupied_Beds"] / daily_occupancy["Total_Beds"] * 100,
+                    np.nan
+                )
 
-            bed["Total_Beds"] = pd.to_numeric(bed["Total_Beds"], errors="coerce")
-            bed["Occupied_Beds"] = pd.to_numeric(bed["Occupied_Beds"], errors="coerce")
-            bed["Available_Beds"] = pd.to_numeric(bed["Available_Beds"], errors="coerce")
-
-            # Derive missing available beds from capacity - occupancy.
-            bed["Available_Beds"] = bed["Available_Beds"].fillna(
-                bed["Total_Beds"] - bed["Occupied_Beds"]
-            )
-
-            bed["Occupancy_Rate"] = np.where(
-                bed["Total_Beds"] > 0,
-                bed["Occupied_Beds"] / bed["Total_Beds"],
-                np.nan
-            )
-            bed["Utilization_Status"] = pd.cut(
-                bed["Occupancy_Rate"],
-                bins=[-np.inf, 0.50, 0.75, 0.90, 1.00, np.inf],
-                labels=[
-                    "Underutilized (<50%)",
-                    "Moderate (50–75%)",
-                    "High (75–90%)",
-                    "Near Capacity (90–100%)",
-                    "Over Capacity (>100%)"
+                peak_day = daily_occupancy.loc[
+                    daily_occupancy["Occupied_Beds"].idxmax()
                 ]
-            )
 
-            total_beds = bed["Total_Beds"].sum(min_count=1)
-            occupied_beds = bed["Occupied_Beds"].sum(min_count=1)
-            available_beds = bed["Available_Beds"].sum(min_count=1)
-            overall_occ = occupied_beds / total_beds if pd.notna(total_beds) and total_beds else np.nan
+                # Hospital-level average occupancy.
+                if hospital_col:
+                    hospital_occupancy = (
+                        occupancy_df.groupby(hospital_col)
+                        .agg(
+                            Total_Beds=("Total_Beds", "first"),
+                            Avg_Occupied_Beds=("Occupied_Beds", "mean"),
+                            Avg_Available_Beds=("Available_Beds", "mean"),
+                            Avg_Occupancy_Rate=("Occupancy_Percentage", "mean"),
+                            Peak_Occupied_Beds=("Occupied_Beds", "max")
+                        )
+                        .reset_index()
+                    )
+                else:
+                    hospital_occupancy = pd.DataFrame({
+                        "Hospital": ["All Hospitals"],
+                        "Total_Beds": [daily_occupancy["Total_Beds"].max()],
+                        "Avg_Occupied_Beds": [daily_occupancy["Occupied_Beds"].mean()],
+                        "Avg_Available_Beds": [daily_occupancy["Available_Beds"].mean()],
+                        "Avg_Occupancy_Rate": [daily_occupancy["Occupancy_Percentage"].mean()],
+                        "Peak_Occupied_Beds": [daily_occupancy["Occupied_Beds"].max()]
+                    })
 
-            k1, k2, k3, k4 = st.columns(4)
-            k1.metric("Total Beds", f"{total_beds:,.0f}" if pd.notna(total_beds) else "N/A")
-            k2.metric("Occupied Beds", f"{occupied_beds:,.1f}" if pd.notna(occupied_beds) else "N/A")
-            k3.metric("Available Beds", f"{available_beds:,.1f}" if pd.notna(available_beds) else "N/A")
-            k4.metric("Occupancy Rate", f"{overall_occ:.1%}" if pd.notna(overall_occ) else "N/A")
+                # KPI calculations.
+                total_beds = int(daily_occupancy["Total_Beds"].max())
+                peak_occupied = int(peak_day["Occupied_Beds"])
+                peak_available = int(peak_day["Available_Beds"])
+                peak_rate = float(peak_day["Occupancy_Percentage"])
+                avg_rate = float(daily_occupancy["Occupancy_Percentage"].mean())
 
-            if estimated:
+                k1, k2, k3, k4, k5 = st.columns(5)
+                k1.metric("Total Beds", f"{total_beds:,}")
+                k2.metric("Peak Occupied Beds", f"{peak_occupied:,}")
+                k3.metric("Available at Peak", f"{peak_available:,}")
+                k4.metric("Peak Occupancy", f"{peak_rate:.2f}%")
+                k5.metric("Average Occupancy", f"{avg_rate:.2f}%")
+
                 st.info(
-                    "Occupied beds are estimated from patient-days ÷ analysis-period days because "
-                    "the dataset does not provide a direct occupied-bed census."
+                    f"Peak occupancy occurred on {peak_day['Date'].strftime('%d-%b-%Y')}: "
+                    f"{peak_occupied:,} beds occupied out of {total_beds:,}."
                 )
 
-            col1, col2 = st.columns(2)
-            fig = px.bar(
-                bed.sort_values("Occupancy_Rate", ascending=False),
-                x=group_col, y="Occupancy_Rate", color="Occupancy_Rate",
-                title=f"{group_label}-wise Bed Occupancy Rate"
-            )
-            fig.add_hline(y=0.80, line_dash="dash", annotation_text="80% planning target")
-            fig.update_yaxes(tickformat=".0%")
-            fig.update_layout(xaxis_tickangle=-45)
-            col1.plotly_chart(fig, use_container_width=True)
+                # Daily occupancy trend.
+                st.subheader("📈 Daily Bed Occupancy Trend")
+                fig = px.line(
+                    daily_occupancy,
+                    x="Date",
+                    y="Occupied_Beds",
+                    title="Daily Bed Occupancy Over Time",
+                    labels={"Occupied_Beds": "Occupied Beds", "Date": "Date"}
+                )
+                fig.add_scatter(
+                    x=[peak_day["Date"]],
+                    y=[peak_day["Occupied_Beds"]],
+                    mode="markers+text",
+                    text=["Peak"],
+                    textposition="top center",
+                    name="Peak Occupancy"
+                )
+                fig.update_layout(hovermode="x unified")
+                st.plotly_chart(fig, use_container_width=True)
 
-            capacity_chart = bed[[group_col, "Total_Beds", "Occupied_Beds", "Available_Beds"]].melt(
-                id_vars=group_col, var_name="Bed Measure", value_name="Beds"
-            )
-            fig = px.bar(
-                capacity_chart, x=group_col, y="Beds", color="Bed Measure",
-                barmode="group", title=f"{group_label}-wise Bed Capacity"
-            )
-            fig.update_layout(xaxis_tickangle=-45)
-            col2.plotly_chart(fig, use_container_width=True)
+                # Occupied vs available on peak date.
+                st.subheader("🛏️ Occupied vs Available Beds at Peak")
+                bed_status = pd.DataFrame({
+                    "Status": ["Occupied Beds", "Available Beds"],
+                    "Beds": [peak_occupied, peak_available]
+                })
+                fig = px.pie(
+                    bed_status,
+                    names="Status",
+                    values="Beds",
+                    hole=0.5,
+                    title=f"Bed Status on {peak_day['Date'].strftime('%d-%b-%Y')}"
+                )
+                fig.update_traces(textinfo="label+value+percent")
+                st.plotly_chart(fig, use_container_width=True)
 
-            st.subheader("🚦 Capacity Classification")
-            status_counts = bed["Utilization_Status"].value_counts(dropna=False).reset_index()
-            status_counts.columns = ["Status", "Groups"]
-            fig = px.bar(status_counts, x="Status", y="Groups", color="Status",
-                         title=f"{group_label}s by Bed Capacity Status")
-            st.plotly_chart(fig, use_container_width=True)
+                # Hospital comparison.
+                if hospital_col:
+                    st.subheader("🏥 Average Bed Occupancy by Hospital")
+                    fig = px.bar(
+                        hospital_occupancy.sort_values("Avg_Occupancy_Rate", ascending=False),
+                        x=hospital_col,
+                        y="Avg_Occupancy_Rate",
+                        color="Avg_Occupancy_Rate",
+                        text="Avg_Occupancy_Rate",
+                        title="Average Bed Occupancy Rate by Hospital",
+                        labels={"Avg_Occupancy_Rate": "Average Occupancy Rate (%)"}
+                    )
+                    fig.update_traces(texttemplate="%{text:.2f}%", textposition="outside")
+                    fig.update_layout(yaxis_ticksuffix="%", xaxis_tickangle=-45)
+                    st.plotly_chart(fig, use_container_width=True)
 
-            st.subheader("📋 Bed Utilization Summary")
-            st.dataframe(
-                bed[[group_col, "Patients", "Total_Beds", "Occupied_Beds",
-                     "Available_Beds", "Occupancy_Rate", "Utilization_Status"]]
-                .sort_values("Occupancy_Rate", ascending=False)
-                .style.format({
-                    "Total_Beds": "{:.0f}",
-                    "Occupied_Beds": "{:.1f}",
-                    "Available_Beds": "{:.1f}",
-                    "Occupancy_Rate": "{:.1%}"
-                }),
-                use_container_width=True, hide_index=True
-            )
+                    st.dataframe(
+                        hospital_occupancy.style.format({
+                            "Total_Beds": "{:.0f}",
+                            "Avg_Occupied_Beds": "{:.1f}",
+                            "Avg_Available_Beds": "{:.1f}",
+                            "Avg_Occupancy_Rate": "{:.2f}%",
+                            "Peak_Occupied_Beds": "{:.0f}"
+                        }),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+
+                # Department occupancy on peak date.
+                if dept_col:
+                    if discharge_col:
+                        occupied_on_peak = bed_df[
+                            (bed_df[date_col] <= peak_day["Date"]) &
+                            (bed_df[discharge_col].fillna(peak_day["Date"] + pd.Timedelta(days=1)) > peak_day["Date"])
+                        ]
+                    else:
+                        occupied_on_peak = bed_df[bed_df[date_col] == peak_day["Date"]]
+
+                    department_occupancy = (
+                        occupied_on_peak.groupby(dept_col)[patient_col]
+                        .nunique()
+                        .reset_index(name="Occupied_Beds")
+                        .sort_values("Occupied_Beds", ascending=False)
+                    )
+
+                    if not department_occupancy.empty:
+                        st.subheader("🏢 Department-wise Occupied Beds at Peak")
+                        fig = px.bar(
+                            department_occupancy.sort_values("Occupied_Beds"),
+                            x="Occupied_Beds",
+                            y=dept_col,
+                            orientation="h",
+                            title=f"Department-wise Occupied Beds on {peak_day['Date'].strftime('%d-%b-%Y')}",
+                            labels={"Occupied_Beds": "Occupied Beds", dept_col: "Department"},
+                            text="Occupied_Beds"
+                        )
+                        fig.update_traces(textposition="outside")
+                        st.plotly_chart(fig, use_container_width=True)
+
+                        highest_department = department_occupancy.iloc[0]
+                        lowest_department = department_occupancy.iloc[-1]
+                        c1, c2 = st.columns(2)
+                        c1.metric(
+                            "Highest Occupied Department",
+                            str(highest_department[dept_col]),
+                            f"{int(highest_department['Occupied_Beds']):,} beds"
+                        )
+                        c2.metric(
+                            "Lowest Occupied Department",
+                            str(lowest_department[dept_col]),
+                            f"{int(lowest_department['Occupied_Beds']):,} beds"
+                        )
+
+                # Download daily occupancy table.
+                st.subheader("📋 Daily Occupancy Details")
+                st.dataframe(
+                    daily_occupancy.style.format({
+                        "Total_Beds": "{:.0f}",
+                        "Occupied_Beds": "{:.0f}",
+                        "Available_Beds": "{:.0f}",
+                        "Occupancy_Percentage": "{:.2f}%"
+                    }),
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+                csv_data = daily_occupancy.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    "⬇️ Download Daily Bed Occupancy Analysis",
+                    csv_data,
+                    "daily_bed_occupancy_analysis.csv",
+                    "text/csv"
+                )
 
 
 # =========================================================
@@ -2000,4 +2155,5 @@ st.caption(
     "Healthcare Operations Dashboard | Streamlit + Plotly | "
     "Interactive filters update all available charts."
 )
+
 
