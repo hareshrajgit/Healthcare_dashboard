@@ -7,12 +7,12 @@ import plotly.express as px
 # PAGE CONFIG
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="Healthcare Operations Intelligence Dashboard with Decision Analytics",
+    page_title="Healthcare Operations Dashboard",
     page_icon="🏥",
     layout="wide"
 )
 
-st.title("🏥 Healthcare Operations Intelligence Dashboard with Decision Analytics")
+st.title("🏥 Healthcare Operations Dashboard")
 st.caption("Interactive operational dashboard built with Streamlit + Plotly")
 
 # ---------------------------------------------------------
@@ -1487,7 +1487,7 @@ elif page == "📏 Benchmark & Utilization Gap":
         else:
             g["Nurses"] = 0
 
-        bed_source = bed_col if bed_col else (
+        bed_source = beds_col if beds_col else (
             "Total_Beds" if "Total_Beds" in filtered.columns else
             "Beds" if "Beds" in filtered.columns else None
         )
@@ -2000,3 +2000,4 @@ st.caption(
     "Healthcare Operations Dashboard | Streamlit + Plotly | "
     "Interactive filters update all available charts."
 )
+
